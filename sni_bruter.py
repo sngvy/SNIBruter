@@ -31,6 +31,8 @@ async def probe_sni(sni, ip, port, timeout):
                 pass
 
 def render_progress_bar(done, total, current_sni, status, bar_length=20):
+    if total == 0:
+        return
     fraction = done / total
     filled_length = int(bar_length * fraction)
     bar = '█' * filled_length + '░' * (bar_length - filled_length)
@@ -52,7 +54,7 @@ async def main():
     
     args = parser.parse_args()
 
-    path = Path(args.sni_path)
+    path = Path(args.sni-path)
     domains = []
     if path.is_file():
         domains = [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip() and not ln.startswith("#")]
@@ -61,20 +63,29 @@ async def main():
             domains.extend([ln.strip() for ln in f.read_text(encoding="utf-8").splitlines() if ln.strip() and not ln.startswith("#")])
     
     domains = list(set(domains))
+    total = len(domains)
     if not domains:
         print("Список SNI пуст.")
         return
 
     print(f"Цель: {args.ip}:{args.port} | Потоков: {args.concurrency}\n")
     
-    sem = asyncio.Semaphore(args.concurrency)
-    processed = 0
-    total = len(domains)
-    valid_count = 0
+    queue = asyncio.Queue()
+    for d in domains:
+        queue.put_nowait(d)
 
-    async def worker(sni):
-        nonlocal processed, valid_count
-        async with sem:
+    processed = 0
+    valid_snis = []
+    lock = asyncio.Lock()
+
+    async def worker():
+        nonlocal processed
+        while True:
+            try:
+                sni = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            
             res_sni, is_ok = await probe_sni(sni, args.ip, args.port, args.timeout)
             processed += 1
             
@@ -82,19 +93,20 @@ async def main():
             render_progress_bar(processed, total, sni, status_text)
             
             if is_ok:
-                valid_count += 1
-                return res_sni
-            return None
+                async with lock:
+                    valid_snis.append(res_sni)
+            
+            queue.task_done()
 
-    tasks = [worker(d) for d in domains]
-    results = await asyncio.gather(*tasks)
+    workers = [asyncio.create_task(worker()) for _ in range(args.concurrency)]
+    
+    await asyncio.gather(*workers)
     
     with open(args.out, "w", encoding="utf-8") as f:
-        for sni in results:
-            if sni:
-                f.write(f"{sni}\n")
+        for sni in valid_snis:
+            f.write(f"{sni}\n")
                 
-    print(f"\n\nЗавершено! Найдено рабочих: {valid_count}")
+    print(f"\n\nЗавершено! Найдено рабочих: {len(valid_snis)}")
     print(f"Результат: {args.out}")
 
 if __name__ == "__main__":
