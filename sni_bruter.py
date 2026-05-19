@@ -54,7 +54,7 @@ async def main():
     
     args = parser.parse_args()
 
-    path = Path(args.sni-path)
+    path = Path(args.sni_path)
     domains = []
     if path.is_file():
         domains = [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip() and not ln.startswith("#")]
